@@ -6,11 +6,16 @@ import logging
 from flask import Flask, request
 from telegram import Bot, Update
 from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
-from utils import (
-    run_backtest, get_last_trades, train_strategy,
-    get_logs, get_status, get_liquidation_data,
-    get_news, generate_trade_signal, store_trade
-)
+from utils import from utils import 
+    (detect_trade_signal,
+    get_trade_results,
+    run_backtest,
+    get_status,
+    get_logs,
+    get_last_trades)
+
+
+ 
 from datetime import datetime
 from dotenv import load_dotenv
 
