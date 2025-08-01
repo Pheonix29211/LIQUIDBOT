@@ -1,0 +1,8 @@
+{
+  "min_liquidation_usd": 3000000,
+  "rsi_threshold": 35,
+  "min_wick_percent": 0.5,
+  "rebound_threshold_percent": 1.0,
+  "max_candles_for_rebound": 5,
+  "last_trained": "2025-08-01"
+}
