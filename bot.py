@@ -51,10 +51,6 @@ def backtest(update, context):
     result = run_backtest()
     update.message.reply_text(result)
 
-def train(update, context):
-    train_strategy()
-    update.message.reply_text("Strategy retrained from past data.")
-
 def status(update, context):
     status_msg = get_status()
     update.message.reply_text(status_msg)
