@@ -1,50 +1,95 @@
-
 import os
-from dotenv import load_dotenv
+import json
+import sqlite3
+import logging
 from flask import Flask, request
 from telegram import Bot, Update
-from telegram.ext import Dispatcher, CommandHandler
-import logging
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
+from utils import (
+    run_backtest, get_last_trades, train_strategy,
+    get_logs, get_status, get_liquidation_data,
+    get_news, generate_trade_signal, store_trade
+)
+from datetime import datetime
+from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
-
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-if not TOKEN or not WEBHOOK_URL:
-    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or WEBHOOK_URL")
+# Set timezone to IST
+os.environ["TZ"] = "Asia/Kolkata"
 
+# Logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# Telegram bot
 bot = Bot(token=TOKEN)
 app = Flask(__name__)
 
-dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
+# Dispatcher setup
+dispatcher = Dispatcher(bot, None, workers=4)
 
-# Command handlers
-def start(update, context):
-    update.message.reply_text("✅ Bot is live. Use /menu to see available commands.")
+# Database
+conn = sqlite3.connect("trade_logs.db", check_same_thread=False)
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    time TEXT, direction TEXT, price REAL, result TEXT,
+    rsi INTEGER, wick REAL, liquidation_usd REAL, confidence REAL
+)''')
+conn.commit()
 
-def menu(update, context):
-    commands = (
-        "/start - Check if bot is online\n"
-        "/menu - List all commands\n"
-        "/status - Show current strategy thresholds\n"
-        "/results - Show recent signal stats\n"
-        "/logs - View logged trades\n"
-        "/last30 - Show last 30 trades\n"
-        "/backtest - Run backtest on past 7 days\n"
-        "/news - Get latest Bitcoin-related news\n"
-    )
-    update.message.reply_text(f"📋 Available Commands:\n{commands}")
+# Handlers
+def start(update: Update, context):
+    update.message.reply_text("Welcome! Type /menu to view all commands.")
+
+def menu(update: Update, context):
+    update.message.reply_text("""Available Commands:
+/menu - Show this menu
+/backtest - Simulate trades from last 7 days
+/last10 - Show last 10 live trades
+/train - Retrain strategy from history
+/logs - Today's trade logs
+/status - View strategy thresholds
+/liqcheck - Test Coinglass API
+/news - Show recent BTC news
+""")
+
+def backtest(update: Update, context):
+    result = run_backtest()
+    update.message.reply_text(result)
+
+def last10(update: Update, context):
+    update.message.reply_text(get_last_trades())
+
+def train(update: Update, context):
+    result = train_strategy()
+    update.message.reply_text(result)
+
+def logs(update: Update, context):
+    update.message.reply_text(get_logs())
+
+def status(update: Update, context):
+    update.message.reply_text(get_status())
+
+def liqcheck(update: Update, context):
+    update.message.reply_text(get_liquidation_data())
+
+def news(update: Update, context):
+    update.message.reply_text(get_news())
 
 # Register handlers
 dispatcher.add_handler(CommandHandler("start", start))
 dispatcher.add_handler(CommandHandler("menu", menu))
-dispatcher.add_handler(CommandHandler("status", lambda u, c: u.message.reply_text("ℹ️ Strategy status coming soon.")))
-dispatcher.add_handler(CommandHandler("results", lambda u, c: u.message.reply_text("📊 Results not implemented yet.")))
-dispatcher.add_handler(CommandHandler("logs", lambda u, c: u.message.reply_text("📄 Logs placeholder.")))
-dispatcher.add_handler(CommandHandler("last30", lambda u, c: u.message.reply_text("🕒 Showing last 30 trades...")))
-dispatcher.add_handler(CommandHandler("backtest", lambda u, c: u.message.reply_text("🔁 Running backtest...")))
-dispatcher.add_handler(CommandHandler("news", lambda u, c: u.message.reply_text("📰 Latest news placeholder...")))
+dispatcher.add_handler(CommandHandler("backtest", backtest))
+dispatcher.add_handler(CommandHandler("last10", last10))
+dispatcher.add_handler(CommandHandler("train", train))
+dispatcher.add_handler(CommandHandler("logs", logs))
+dispatcher.add_handler(CommandHandler("status", status))
+dispatcher.add_handler(CommandHandler("liqcheck", liqcheck))
+dispatcher.add_handler(CommandHandler("news", news))
 
 # Webhook route
 @app.route(f"/{TOKEN}", methods=["POST"])
@@ -53,12 +98,12 @@ def webhook():
     dispatcher.process_update(update)
     return "ok"
 
-# Root test route
-@app.route("/", methods=["GET"])
+# Root route
+@app.route("/")
 def index():
-    return "Bot is running."
+    return "Bot is running!"
 
+# Set webhook
 if __name__ == "__main__":
     bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-    logging.info(f"✅ Webhook set: {WEBHOOK_URL}/{TOKEN}")
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
