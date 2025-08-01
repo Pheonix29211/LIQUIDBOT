@@ -1,62 +1,64 @@
 
 import os
-import logging
-from telegram import Update, Bot
-from telegram.ext import Updater, CommandHandler, CallbackContext, Dispatcher
-from flask import Flask, request
 from dotenv import load_dotenv
+from flask import Flask, request
+from telegram import Bot, Update
+from telegram.ext import Dispatcher, CommandHandler
+import logging
 
-# Load .env if exists
 load_dotenv()
 
-# Logging setup
-logging.basicConfig(
-    format='[%(levelname)s] %(message)s',
-    level=logging.INFO
-)
-
-# Read environment variables safely
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-if not TOKEN:
-    logging.error("TELEGRAM_BOT_TOKEN not set in environment.")
-    exit(1)
-if not WEBHOOK_URL:
-    logging.error("WEBHOOK_URL not set in environment.")
-    exit(1)
+if not TOKEN or not WEBHOOK_URL:
+    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or WEBHOOK_URL")
 
-# Boot logs
-logging.info("Starting bot with webhook URL: %s", WEBHOOK_URL)
-
-# Bot setup
 bot = Bot(token=TOKEN)
-updater = Updater(bot=bot, use_context=True)
-dispatcher: Dispatcher = updater.dispatcher
-
-# Define a simple command
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("🚀 Bot is live and running!")
-
-dispatcher.add_handler(CommandHandler("start", start))
-
-# Flask app for webhook
 app = Flask(__name__)
 
+dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
+
+# Command handlers
+def start(update, context):
+    update.message.reply_text("✅ Bot is live. Use /menu to see available commands.")
+
+def menu(update, context):
+    commands = (
+        "/start - Check if bot is online\n"
+        "/menu - List all commands\n"
+        "/status - Show current strategy thresholds\n"
+        "/results - Show recent signal stats\n"
+        "/logs - View logged trades\n"
+        "/last30 - Show last 30 trades\n"
+        "/backtest - Run backtest on past 7 days\n"
+        "/news - Get latest Bitcoin-related news\n"
+    )
+    update.message.reply_text(f"📋 Available Commands:\n{commands}")
+
+# Register handlers
+dispatcher.add_handler(CommandHandler("start", start))
+dispatcher.add_handler(CommandHandler("menu", menu))
+dispatcher.add_handler(CommandHandler("status", lambda u, c: u.message.reply_text("ℹ️ Strategy status coming soon.")))
+dispatcher.add_handler(CommandHandler("results", lambda u, c: u.message.reply_text("📊 Results not implemented yet.")))
+dispatcher.add_handler(CommandHandler("logs", lambda u, c: u.message.reply_text("📄 Logs placeholder.")))
+dispatcher.add_handler(CommandHandler("last30", lambda u, c: u.message.reply_text("🕒 Showing last 30 trades...")))
+dispatcher.add_handler(CommandHandler("backtest", lambda u, c: u.message.reply_text("🔁 Running backtest...")))
+dispatcher.add_handler(CommandHandler("news", lambda u, c: u.message.reply_text("📰 Latest news placeholder...")))
+
+# Webhook route
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
     dispatcher.process_update(update)
-    return "OK"
+    return "ok"
 
-# Set webhook
-try:
-    bot.set_webhook(f"{WEBHOOK_URL}/{TOKEN}")
-    logging.info("Webhook set successfully.")
-except Exception as e:
-    logging.error("Failed to set webhook: %s", e)
-    exit(1)
+# Root test route
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot is running."
 
-# Flask run for Render (port is managed automatically)
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+    logging.info(f"✅ Webhook set: {WEBHOOK_URL}/{TOKEN}")
+    app.run(host="0.0.0.0", port=10000)
