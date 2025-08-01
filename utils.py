@@ -1,42 +1,43 @@
 
-import datetime
-import random
+import os
+import json
+import pandas as pd
+from datetime import datetime, timedelta
 
-def get_fake_trade():
-    price = round(random.uniform(110000, 120000), 1)
-    score = round(random.uniform(1.0, 2.0), 2)
-    result = random.choice(["win", "loss", "open"])
-    rsi = random.randint(20, 35)
-    wick = round(random.uniform(0.4, 1.2), 2)
-    liq = random.randint(3000000, 8000000)
-    tp_hit = result == "win"
-    sl_hit = result == "loss"
-    return {
-        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "side": "LONG",
-        "price": price,
-        "score": score,
-        "rsi": rsi,
-        "wick": wick,
-        "liq": liq,
-        "result": result,
-        "tp_hit": tp_hit,
-        "sl_hit": sl_hit
-    }
+TRADES_FILE = "trades.txt"
 
-def run_backtest(limit=30):
-    results = []
-    for _ in range(limit):
-        trade = get_fake_trade()
-        results.append(trade)
-    return results
+def log_trade(trade):
+    with open(TRADES_FILE, "a") as f:
+        f.write(json.dumps(trade) + "\n")
 
-def format_trade(trade):
-    line = f"{trade['timestamp']} | {trade['side']} at {trade['price']} | Score: {trade['score']}"
-    if trade["result"] != "open":
-        line += f" | Result: {trade['result']}"
-    if trade["tp_hit"]:
-        line += " ✅ TP HIT"
-    if trade["sl_hit"]:
-        line += " ❌ SL HIT"
-    return line
+def read_trades():
+    if not os.path.exists(TRADES_FILE):
+        return []
+    with open(TRADES_FILE, "r") as f:
+        return [json.loads(line.strip()) for line in f if line.strip()]
+
+def get_last_trades(n=30):
+    trades = read_trades()
+    return trades[-n:]
+
+def evaluate_trade(entry_price, current_price, direction):
+    if direction == "long":
+        return round(((current_price - entry_price) / entry_price) * 100, 2)
+    else:
+        return round(((entry_price - current_price) / entry_price) * 100, 2)
+
+def run_backtest(historical_data, threshold_score=1.0):
+    signals = []
+    for row in historical_data:
+        score = row.get("score", 0)
+        if score >= threshold_score:
+            signals.append({
+                "timestamp": row["timestamp"],
+                "direction": row["direction"],
+                "entry_price": row["price"],
+                "rsi": row["rsi"],
+                "wick": row["wick"],
+                "liq": row["liq"],
+                "score": score
+            })
+    return signals
