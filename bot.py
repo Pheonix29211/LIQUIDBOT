@@ -7,7 +7,7 @@ from flask import Flask, request
 from telegram import Bot, Update
 from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
 from utils import (
-    run_backtest, get_last_trades, train_strategy,
+    run_backtest, get_last_trades,
     get_logs, get_status, get_liquidation_data,
     get_news, generate_trade_signal, store_trade
 )
