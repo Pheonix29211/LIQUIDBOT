@@ -1,3 +1,4 @@
+
 import os
 import json
 import sqlite3
@@ -28,82 +29,87 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 bot = Bot(token=TOKEN)
 app = Flask(__name__)
 
-# Dispatcher setup
-dispatcher = Dispatcher(bot, None, workers=4)
+dispatcher = Dispatcher(bot, None, use_context=True)
 
-# Database
-conn = sqlite3.connect("trade_logs.db", check_same_thread=False)
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS trades (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    time TEXT, direction TEXT, price REAL, result TEXT,
-    rsi INTEGER, wick REAL, liquidation_usd REAL, confidence REAL
-)''')
-conn.commit()
+# Telegram commands
+def start(update, context):
+    update.message.reply_text("Welcome to LiquidBot!\nType /menu to view all available commands.")
 
-# Handlers
-def start(update: Update, context):
-    update.message.reply_text("Welcome! Type /menu to view all commands.")
+def menu(update, context):
+    update.message.reply_text("Available Commands:\n"
+                              "/menu - Show this menu\n"
+                              "/start - Start the bot\n"
+                              "/backtest - Run a 7-day backtest with trade details\n"
+                              "/train - Retrain the strategy from past data\n"
+                              "/status - Show current strategy parameters\n"
+                              "/logs - Show recent logs\n"
+                              "/results - Show strategy performance\n"
+                              "/last30 - Show last 30 live trades (wins/losses)\n"
+                              "/news - Show recent Bitcoin news headlines")
 
-def menu(update: Update, context):
-    update.message.reply_text("""Available Commands:
-/menu - Show this menu
-/backtest - Simulate trades from last 7 days
-/last10 - Show last 10 live trades
-/train - Retrain strategy from history
-/logs - Today's trade logs
-/status - View strategy thresholds
-/liqcheck - Test Coinglass API
-/news - Show recent BTC news
-""")
-
-def backtest(update: Update, context):
+def backtest(update, context):
     result = run_backtest()
     update.message.reply_text(result)
 
-def last10(update: Update, context):
-    update.message.reply_text(get_last_trades())
+def train(update, context):
+    train_strategy()
+    update.message.reply_text("Strategy retrained from past data.")
 
-def train(update: Update, context):
-    result = train_strategy()
-    update.message.reply_text(result)
+def status(update, context):
+    status_msg = get_status()
+    update.message.reply_text(status_msg)
 
-def logs(update: Update, context):
-    update.message.reply_text(get_logs())
+def logs(update, context):
+    log_data = get_logs()
+    update.message.reply_text(log_data)
 
-def status(update: Update, context):
-    update.message.reply_text(get_status())
+def results(update, context):
+    try:
+        with open("trades.txt", "r") as file:
+            lines = file.readlines()[-30:]
+        if not lines:
+            update.message.reply_text("No trade data found.")
+            return
+        formatted = ""
+        for line in lines:
+            if "LONG" in line or "SHORT" in line:
+                formatted += line
+        update.message.reply_text("Last 30 Trades:\n" + formatted)
+    except Exception as e:
+        update.message.reply_text("Failed to load results.")
 
-def liqcheck(update: Update, context):
-    update.message.reply_text(get_liquidation_data())
+def last30(update, context):
+    last = get_last_trades()
+    update.message.reply_text(last)
 
-def news(update: Update, context):
-    update.message.reply_text(get_news())
+def news(update, context):
+    headlines = get_news()
+    update.message.reply_text("Latest Bitcoin News:\n" + headlines)
 
-# Register handlers
 dispatcher.add_handler(CommandHandler("start", start))
 dispatcher.add_handler(CommandHandler("menu", menu))
 dispatcher.add_handler(CommandHandler("backtest", backtest))
-dispatcher.add_handler(CommandHandler("last10", last10))
 dispatcher.add_handler(CommandHandler("train", train))
-dispatcher.add_handler(CommandHandler("logs", logs))
 dispatcher.add_handler(CommandHandler("status", status))
-dispatcher.add_handler(CommandHandler("liqcheck", liqcheck))
+dispatcher.add_handler(CommandHandler("logs", logs))
+dispatcher.add_handler(CommandHandler("results", results))
+dispatcher.add_handler(CommandHandler("last30", last30))
 dispatcher.add_handler(CommandHandler("news", news))
 
-# Webhook route
-@app.route(f"/{TOKEN}", methods=["POST"])
+# Signal checker
+def check_signals():
+    signal = generate_trade_signal()
+    if signal:
+        store_trade(signal)
+        bot.send_message(chat_id=os.getenv("OWNER_CHAT_ID"), text=signal)
+
+@app.route(f'/{TOKEN}', methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
     dispatcher.process_update(update)
     return "ok"
 
-# Root route
-@app.route("/")
-def index():
-    return "Bot is running!"
-
-# Set webhook
 if __name__ == "__main__":
+    logging.info("Starting bot with webhook URL: %s", f"{WEBHOOK_URL}/{TOKEN}")
     bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=10000)
