@@ -1,90 +1,75 @@
 import os
-import logging
 from flask import Flask, request
 from telegram import Bot, Update
-from telegram.ext import Dispatcher, CommandHandler, CallbackContext
+from telegram.ext import Dispatcher, CommandHandler
+from dotenv import load_dotenv
 from utils import (
     run_backtest,
-    get_status,
+    get_results_summary,
     get_last_trades,
-    get_liquidation_data,
-    generate_trade_signal,
-    get_news,
-    store_trade
 )
-from dotenv import load_dotenv
 
-# Load env variables
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID")
 
-# Init bot & flask
+TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
 bot = Bot(token=TOKEN)
 app = Flask(__name__)
-dispatcher = Dispatcher(bot, None, use_context=True)
 
-# Timezone
-os.environ["TZ"] = "Asia/Kolkata"
+dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
 
-# Logging
-logging.basicConfig(level=logging.INFO)
+# --- Command Handlers ---
 
-# Handlers
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("🤖 Welcome to LiquidBot! Type /menu to view commands.")
+def start(update, context):
+    update.message.reply_text("🚀 Welcome to LiquidBot!\nUse /menu to see available commands.")
 
-def menu(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "📋 Available Commands:\n"
-        "/start - Welcome message\n"
-        "/menu - Show all commands\n"
-        "/backtest - Simulate trades from last 7 days\n"
-        "/status - Show current strategy thresholds\n"
-        "/last30 - Show last 30 trades\n"
-        "/news - Show Bitcoin news\n"
-    )
+def menu(update, context):
+    commands = """
+📋 Available Commands:
+/start - Start the bot
+/menu - Show this menu
+/backtest - Simulate last 7 days of trades
+/results - Show performance summary
+/last30 - Show last 30 trades
+"""
+    update.message.reply_text(commands)
 
-def backtest(update: Update, context: CallbackContext):
+def backtest(update, context):
     result = run_backtest()
-    update.message.reply_text(result)
+    update.message.reply_text(result or "No backtest data available.")
 
-def status(update: Update, context: CallbackContext):
-    update.message.reply_text(get_status())
+def results(update, context):
+    summary = get_results_summary()
+    update.message.reply_text(summary or "No results yet.")
 
-def last30(update: Update, context: CallbackContext):
-    update.message.reply_text(get_last_trades())
+def last30(update, context):
+    trades = get_last_trades(30)
+    if not trades:
+        update.message.reply_text("No trade history found.")
+    else:
+        msg = "📊 Last 30 Trades:\n\n" + "\n".join(trades)
+        update.message.reply_text(msg)
 
-def news(update: Update, context: CallbackContext):
-    update.message.reply_text(get_news())
+# --- Register Handlers ---
 
-# Register handlers
 dispatcher.add_handler(CommandHandler("start", start))
 dispatcher.add_handler(CommandHandler("menu", menu))
 dispatcher.add_handler(CommandHandler("backtest", backtest))
-dispatcher.add_handler(CommandHandler("status", status))
+dispatcher.add_handler(CommandHandler("results", results))
 dispatcher.add_handler(CommandHandler("last30", last30))
-dispatcher.add_handler(CommandHandler("news", news))
 
-# Signal checker
-def check_signals():
-    signal = generate_trade_signal()
-    if signal:
-        store_trade(signal)
-        bot.send_message(chat_id=OWNER_CHAT_ID, text=signal)
+# --- Webhook route ---
 
-# Webhook
 @app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
+def receive_update():
     update = Update.de_json(request.get_json(force=True), bot)
     dispatcher.process_update(update)
-    return "ok"
+    return "ok", 200
 
-@app.route("/")
-def index():
-    return "Bot is live!"
+# --- Set webhook ---
 
 if __name__ == "__main__":
+    print("[INFO] Starting bot with webhook URL:", f"{WEBHOOK_URL}/{TOKEN}")
     bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=10000)
