@@ -4,3 +4,5 @@ requests
 pandas
 urllib3==1.26.18
 six==1.16.0
+python-dotenv
+
