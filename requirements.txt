@@ -3,5 +3,3 @@ Flask
 requests
 pandas
 python-dotenv
-urllib3==1.26.16
-
