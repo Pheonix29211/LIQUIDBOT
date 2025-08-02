@@ -19,7 +19,6 @@ from utils import (
     calculate_score,
     fetch_mexc_ohlcv,
     fetch_mexc_ticker,
-    fetch_mexc_funding_rate,
 )
 
 load_dotenv()
@@ -29,14 +28,14 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID")
 
 if not TELEGRAM_TOKEN or not WEBHOOK_URL:
-    raise RuntimeError("Required env vars missing.")
+    raise RuntimeError("Missing required env vars TELEGRAM_BOT_TOKEN or WEBHOOK_URL.")
 
 bot = Bot(token=TELEGRAM_TOKEN)
 app = Flask(__name__)
 dispatcher = Dispatcher(bot, None, use_context=True)
 
 os.environ["TZ"] = "Asia/Kolkata"
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 # --- Handlers ---
 def start(update: Update, context):
@@ -137,8 +136,8 @@ def scan_cmd(update: Update, context):
     upper_wick_pct = ((high - max(open_p, close_p)) / total_range) * 100
 
     liq, source = fetch_combined_liquidation()
-    score_long = calculate_score(rsi, lower_wick_pct, liq)
-    score_short = calculate_score(rsi, upper_wick_pct, liq)
+    score_long = calculate_score(rsi, lower_wick_pct, liq) if rsi is not None else None
+    score_short = calculate_score(rsi, upper_wick_pct, liq) if rsi is not None else None
 
     debug_msg = (
         f"🛠️ Debug Info:\n"

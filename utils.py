@@ -18,28 +18,30 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY", "").strip()
 def _get_conn():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        time TEXT,
-        direction TEXT,
-        entry_price REAL,
-        result TEXT,
-        exit_price REAL,
-        exit_time TEXT,
-        rsi REAL,
-        wick_percent REAL,
-        liquidation_usd REAL,
-        score REAL,
-        tp_pct REAL,
-        sl_pct REAL,
-        liquidation_source TEXT
-    )''')
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            time TEXT,
+            direction TEXT,
+            entry_price REAL,
+            result TEXT,
+            exit_price REAL,
+            exit_time TEXT,
+            rsi REAL,
+            wick_percent REAL,
+            liquidation_usd REAL,
+            score REAL,
+            tp_pct REAL,
+            sl_pct REAL,
+            liquidation_source TEXT
+        )"""
+    )
     conn.commit()
     return conn
 
 # --- MEXC integration ---
 MEXC_BASE = "https://contract.mexc.com/api/v1/contract"
-SYMBOL = "BTC_USDT"  # MEXC uses underscore
+SYMBOL = "BTC_USDT"  # underscore as required by MEXC
 
 def fetch_mexc_ohlcv(symbol=SYMBOL, interval="Min5", limit=50):
     interval_map = {
@@ -72,13 +74,15 @@ def fetch_mexc_ohlcv(symbol=SYMBOL, interval="Min5", limit=50):
         closes = data.get("close", [])
         candles = []
         for i in range(len(times)):
-            candles.append({
-                "open_time": times[i] * 1000,
-                "open": float(opens[i]),
-                "high": float(highs[i]),
-                "low": float(lows[i]),
-                "close": float(closes[i]),
-            })
+            candles.append(
+                {
+                    "open_time": times[i] * 1000,
+                    "open": float(opens[i]),
+                    "high": float(highs[i]),
+                    "low": float(lows[i]),
+                    "close": float(closes[i]),
+                }
+            )
         return candles
     except Exception as e:
         logging.warning("Failed to fetch MEXC OHLCV: %s", e)
@@ -121,7 +125,7 @@ def infer_liquidation_pressure_from_mexc():
     if open_interest <= 0:
         return 0.0, "mexc_no_oi"
     pressure = (open_interest / 1e9) * (1 + abs(funding_rate) * 10)
-    fallback_liq = pressure * 1_000_000  # scale to dollar-ish proxy
+    fallback_liq = pressure * 1_000_000  # scale to dollar-like proxy
     return fallback_liq, "mexc_inferred"
 
 # --- CoinGlass liquidation ---
@@ -155,7 +159,7 @@ def fetch_combined_liquidation():
         return mexc_liq, source
     return 0, "none"
 
-# --- Price fallback (if MEXC klines fail) via CoinGecko ---
+# --- Price fallback via CoinGecko if MEXC fails ---
 def fetch_coingecko_price_candle():
     try:
         resp = requests.get(
@@ -169,13 +173,7 @@ def fetch_coingecko_price_candle():
         price = float(data.get("bitcoin", {}).get("usd", 0))
         if price > 0:
             t_ms = int(time.time() * 1000)
-            return [{
-                "open_time": t_ms,
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-            }]
+            return [{"open_time": t_ms, "open": price, "high": price, "low": price, "close": price}]
     except Exception as e:
         logging.warning("CoinGecko fallback failed: %s", e)
     return []
@@ -248,7 +246,7 @@ def generate_trade_signal():
     upper_wick_pct = (upper_wick / total_range) * 100
 
     liquidation, source = fetch_combined_liquidation()
-    funding_rate = 1.0
+    funding_rate = 1.0  # could be replaced with real funding from MEXC if desired
 
     direction = None
     wick_pct = 0
@@ -314,7 +312,7 @@ def evaluate_open_trades():
     if not rows:
         conn.close()
         return
-    # Use latest candle close as current price
+    # get current price from MEXC or fallback
     ohlcv = fetch_mexc_ohlcv(limit=2) if hasattr(fetch_mexc_ohlcv, "__call__") else []
     if not ohlcv:
         ohlcv = fetch_coingecko_price_candle()
@@ -327,7 +325,7 @@ def evaluate_open_trades():
         trade_id = r[0]
         direction = r[2]
         entry_price = r[3]
-        status = check_tp_sl(entry_price, current_price, direction, tp_pct=r[11], sl_pct=r[12])
+        status = check_tp_sl(entry_price, current_price, direction, tp_pct=r[10], sl_pct=r[11])
         if status in ("TP HIT", "SL HIT"):
             exit_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             c.execute(
@@ -390,7 +388,7 @@ def run_backtest(days=7):
             filtered.append(format_trade_row(r))
     if not filtered:
         return f"No trades in last {days} days."
-    return "📉 Backtest:\n" + "\n".join(filtered[:30})
+    return "📉 Backtest:\n" + "\n".join(filtered[:30])
 
 def get_results_summary():
     conn = _get_conn()
