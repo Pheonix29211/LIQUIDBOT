@@ -83,7 +83,7 @@ def fetch_binance_ohlcv(symbol="BTCUSDT", interval="5m", limit=50):
                 resp = requests.get(url, params=params, headers=headers, timeout=10)
                 if resp.status_code == 451:
                     logging.warning("Binance returned 451 on %s", url)
-                    break  # try next base
+                    break
                 resp.raise_for_status()
                 data = resp.json()
                 return _parse_klines(data)
@@ -91,20 +91,16 @@ def fetch_binance_ohlcv(symbol="BTCUSDT", interval="5m", limit=50):
                 code = getattr(e.response, "status_code", None)
                 if code in (429, 500, 502, 503, 504):
                     sleep = 1.5 ** attempt
-                    time_to_wait = sleep
-                    logging.warning("Transient HTTP %s from Binance, retrying in %.1fs", code, time_to_wait)
                     import time
-                    time.sleep(time_to_wait)
+                    time.sleep(sleep)
                     continue
                 logging.error("Binance HTTP error %s: %s", code, e.response.text if e.response is not None else str(e))
                 break
             except Exception as ex:
                 sleep = 1.5 ** attempt
-                logging.warning("Error fetching Binance OHLCV (%s), retrying in %.1fs", ex, sleep)
                 import time
                 time.sleep(sleep)
         # try next base_url
-    # fallback to coingecko
     return fetch_fallback_price_as_candle()
 
 # --- RSI ---
@@ -192,7 +188,7 @@ def fetch_combined_liquidation():
     cg = fetch_coinglass_liquidation()
     if cg and cg > 0:
         return cg, "coinglass"
-    fallback = infer_liquidation_pressure() * 1_000_000  # scale
+    fallback = infer_liquidation_pressure() * 1_000_000
     return fallback, "binance_fallback"
 
 # --- Scoring & signal logic ---
@@ -319,7 +315,7 @@ def evaluate_open_trades():
         trade_id = r[0]
         direction = r[2]
         entry_price = r[3]
-        status = check_tp_sl(entry_price, current_price, direction, tp_pct=r[9], sl_pct=r[10])
+        status = check_tp_sl(entry_price, current_price, direction, tp_pct=r[11], sl_pct=r[12])
         if status in ("TP HIT", "SL HIT"):
             exit_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             c.execute(
@@ -333,7 +329,6 @@ def evaluate_open_trades():
 
 # --- Reporting ---
 def format_trade_row(r):
-    # columns: id, time, direction, entry_price, result, exit_price, exit_time, rsi, wick_percent, liquidation_usd, score, tp_pct, sl_pct, liquidation_source
     _, time, direction, entry_price, result, exit_price, exit_time, rsi, wick, liq, score, tp_pct, sl_pct, source = r
     s = f"{time} | {direction.upper()} @ {entry_price:.1f} | RSI={rsi} | Wick={wick:.2f}% | Liq=${liq:,} ({source}) | Score={score}"
     if result and result != "open":
@@ -354,7 +349,6 @@ def get_logs(limit=20):
     return get_last_trades(limit)
 
 def get_status():
-    # load strategy thresholds
     default = {"rsi_threshold": 35, "wick_threshold": 0.5, "liq_threshold": 2_000_000}
     if os.path.exists(STRATEGY_FILE):
         try:
@@ -398,7 +392,6 @@ def get_results_summary():
     losses = sum(1 for r in rows if r[0] == "SL HIT")
     total = wins + losses
     win_rate = round((wins / total) * 100, 2) if total else 0
-    # average score over all trades
     conn = _get_conn()
     c = conn.cursor()
     c.execute("SELECT score FROM trades")
@@ -406,9 +399,9 @@ def get_results_summary():
     conn.close()
     avg_score = round(sum(all_scores) / len(all_scores), 2) if all_scores else 0
     return (
-        f"Closed trades: {total}\\n"
-        f"Wins (TP): {wins}\\n"
-        f"Losses (SL): {losses}\\n"
-        f"Win rate: {win_rate}%\\n"
+        f"Closed trades: {total}\n"
+        f"Wins (TP): {wins}\n"
+        f"Losses (SL): {losses}\n"
+        f"Win rate: {win_rate}%\n"
         f"Avg score: {avg_score}"
     )
