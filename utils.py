@@ -3,6 +3,7 @@ import json
 import requests
 import sqlite3
 import logging
+import time
 from datetime import datetime, timedelta
 
 # --- Config / filenames ---
@@ -36,90 +37,92 @@ def _get_conn():
     conn.commit()
     return conn
 
-# --- Binance OHLCV with fallback ---
-def fetch_fallback_price_as_candle():
+# --- MEXC integration ---
+MEXC_BASE = "https://contract.mexc.com/api/v1/contract"
+SYMBOL = "BTC_USDT"  # MEXC uses underscore
+
+def fetch_mexc_ohlcv(symbol=SYMBOL, interval="Min5", limit=50):
+    interval_map = {
+        "Min1": 60,
+        "Min5": 300,
+        "Min15": 900,
+        "Min30": 1800,
+        "Min60": 3600,
+        "Hour4": 4 * 3600,
+        "Hour8": 8 * 3600,
+        "Day1": 24 * 3600,
+    }
+    step = interval_map.get(interval, 300)
+    end = int(time.time())
+    start = end - step * limit
+    params = {"interval": interval, "start": start, "end": end}
     try:
-        resp = requests.get(
-            "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart",
-            params={"vs_currency": "usd", "days": 1, "interval": "hourly"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        prices = data.get("prices", [])
-        if not prices:
+        url = f"{MEXC_BASE}/kline/{symbol}"
+        r = requests.get(url, params=params, timeout=8, headers={"User-Agent": "LiquidBot/1.0"})
+        r.raise_for_status()
+        resp = r.json()
+        if not resp.get("success"):
+            logging.warning("MEXC kline returned not success: %s", resp)
             return []
-        last = prices[-1][1]
-        candle = {
-            "open_time": int(prices[-1][0]),
-            "open": last,
-            "high": last,
-            "low": last,
-            "close": last,
-        }
-        return [candle]
+        data = resp.get("data", {})
+        times = data.get("time", [])
+        opens = data.get("open", [])
+        highs = data.get("high", [])
+        lows = data.get("low", [])
+        closes = data.get("close", [])
+        candles = []
+        for i in range(len(times)):
+            candles.append({
+                "open_time": times[i] * 1000,
+                "open": float(opens[i]),
+                "high": float(highs[i]),
+                "low": float(lows[i]),
+                "close": float(closes[i]),
+            })
+        return candles
     except Exception as e:
-        logging.warning("Fallback price fetch failed: %s", e)
+        logging.warning("Failed to fetch MEXC OHLCV: %s", e)
         return []
 
-def fetch_binance_ohlcv(symbol="BTCUSDT", interval="5m", limit=50):
-    def _parse_klines(raw):
-        return [{
-            "open_time": item[0],
-            "open": float(item[1]),
-            "high": float(item[2]),
-            "low": float(item[3]),
-            "close": float(item[4]),
-        } for item in raw]
+def fetch_mexc_ticker(symbol=SYMBOL):
+    try:
+        url = f"{MEXC_BASE}/ticker"
+        r = requests.get(url, params={"symbol": symbol}, timeout=5, headers={"User-Agent": "LiquidBot/1.0"})
+        r.raise_for_status()
+        resp = r.json()
+        if not resp.get("success"):
+            logging.warning("MEXC ticker not success: %s", resp)
+            return {}
+        return resp.get("data", {})
+    except Exception as e:
+        logging.warning("Failed to fetch MEXC ticker: %s", e)
+        return {}
 
-    base_urls = ["https://api.binance.com", "https://api1.binance.com"]
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    headers = {"User-Agent": "LiquidBot/1.0"}
+def fetch_mexc_funding_rate(symbol=SYMBOL):
+    try:
+        url = f"{MEXC_BASE}/funding_rate/{symbol}"
+        r = requests.get(url, timeout=5, headers={"User-Agent": "LiquidBot/1.0"})
+        r.raise_for_status()
+        resp = r.json()
+        if not resp.get("success"):
+            logging.warning("MEXC funding_rate not success: %s", resp)
+            return 0.0
+        return float(resp.get("data", {}).get("fundingRate", 0.0))
+    except Exception as e:
+        logging.warning("Failed to fetch MEXC funding rate: %s", e)
+        return 0.0
 
-    for base in base_urls:
-        url = f"{base}/api/v3/klines"
-        for attempt in range(3):
-            try:
-                resp = requests.get(url, params=params, headers=headers, timeout=10)
-                if resp.status_code == 451:
-                    logging.warning("Binance returned 451 on %s", url)
-                    break
-                resp.raise_for_status()
-                data = resp.json()
-                return _parse_klines(data)
-            except requests.HTTPError as e:
-                code = getattr(e.response, "status_code", None)
-                if code in (429, 500, 502, 503, 504):
-                    sleep = 1.5 ** attempt
-                    import time
-                    time.sleep(sleep)
-                    continue
-                logging.error("Binance HTTP error %s: %s", code, e.response.text if e.response is not None else str(e))
-                break
-            except Exception as ex:
-                sleep = 1.5 ** attempt
-                import time
-                time.sleep(sleep)
-        # try next base_url
-    return fetch_fallback_price_as_candle()
-
-# --- RSI ---
-def compute_rsi(closes, period=14):
-    if len(closes) < period + 1:
-        return None
-    gains = []
-    losses = []
-    for i in range(1, period + 1):
-        delta = closes[i] - closes[i - 1]
-        gains.append(max(delta, 0))
-        losses.append(max(-delta, 0))
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return round(rsi, 2)
+def infer_liquidation_pressure_from_mexc():
+    ticker = fetch_mexc_ticker()
+    if not ticker:
+        return 0.0, "mexc_failed"
+    open_interest = float(ticker.get("holdVol", 0))  # analogous to open interest
+    funding_rate = float(ticker.get("fundingRate", 0))
+    if open_interest <= 0:
+        return 0.0, "mexc_no_oi"
+    pressure = (open_interest / 1e9) * (1 + abs(funding_rate) * 10)
+    fallback_liq = pressure * 1_000_000  # scale to dollar-ish proxy
+    return fallback_liq, "mexc_inferred"
 
 # --- CoinGlass liquidation ---
 def fetch_coinglass_liquidation():
@@ -143,53 +146,57 @@ def fetch_coinglass_liquidation():
         logging.warning("CoinGlass fetch failed: %s", e)
         return 0
 
-# --- Binance fallback for liquidation pressure ---
-def fetch_binance_open_interest(symbol="BTCUSDT"):
-    try:
-        r = requests.get(
-            "https://fapi.binance.com/fapi/v1/openInterest",
-            params={"symbol": symbol},
-            timeout=5,
-            headers={"User-Agent": "LiquidBot/1.0"},
-        )
-        r.raise_for_status()
-        data = r.json()
-        return float(data.get("openInterest", 0))
-    except Exception as e:
-        logging.warning("Failed to fetch Binance open interest: %s", e)
-        return 0.0
-
-def fetch_binance_funding_rate(symbol="BTCUSDT"):
-    try:
-        r = requests.get(
-            "https://fapi.binance.com/fapi/v1/fundingRate",
-            params={"symbol": symbol, "limit": 1},
-            timeout=5,
-            headers={"User-Agent": "LiquidBot/1.0"},
-        )
-        r.raise_for_status()
-        data = r.json()
-        if isinstance(data, list) and data:
-            return float(data[0].get("fundingRate", 0))
-        return 0.0
-    except Exception as e:
-        logging.warning("Failed to fetch Binance funding rate: %s", e)
-        return 0.0
-
-def infer_liquidation_pressure():
-    oi = fetch_binance_open_interest()
-    fr = fetch_binance_funding_rate()
-    if oi <= 0:
-        return 0.0
-    pressure = (oi / 1e9) * (1 + abs(fr) * 10)
-    return round(pressure, 4)
-
 def fetch_combined_liquidation():
     cg = fetch_coinglass_liquidation()
     if cg and cg > 0:
         return cg, "coinglass"
-    fallback = infer_liquidation_pressure() * 1_000_000
-    return fallback, "binance_fallback"
+    mexc_liq, source = infer_liquidation_pressure_from_mexc()
+    if mexc_liq and mexc_liq > 0:
+        return mexc_liq, source
+    return 0, "none"
+
+# --- Price fallback (if MEXC klines fail) via CoinGecko ---
+def fetch_coingecko_price_candle():
+    try:
+        resp = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": "bitcoin", "vs_currencies": "usd"},
+            timeout=6,
+            headers={"User-Agent": "LiquidBot/1.0"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        price = float(data.get("bitcoin", {}).get("usd", 0))
+        if price > 0:
+            t_ms = int(time.time() * 1000)
+            return [{
+                "open_time": t_ms,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+            }]
+    except Exception as e:
+        logging.warning("CoinGecko fallback failed: %s", e)
+    return []
+
+# --- RSI ---
+def compute_rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return None
+    gains = []
+    losses = []
+    for i in range(1, period + 1):
+        delta = closes[i] - closes[i - 1]
+        gains.append(max(delta, 0))
+        losses.append(max(-delta, 0))
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return round(rsi, 2)
 
 # --- Scoring & signal logic ---
 def calculate_score(rsi, wick_pct, liquidation_usd, funding_rate=1.0):
@@ -222,7 +229,9 @@ def check_tp_sl(entry_price, current_price, direction, tp_pct=0.015, sl_pct=0.01
     return "open"
 
 def generate_trade_signal():
-    ohlcv = fetch_binance_ohlcv()
+    ohlcv = fetch_mexc_ohlcv()
+    if not ohlcv:
+        ohlcv = fetch_coingecko_price_candle()
     if not ohlcv:
         return None
     closes = [c["close"] for c in ohlcv]
@@ -305,7 +314,10 @@ def evaluate_open_trades():
     if not rows:
         conn.close()
         return
-    ohlcv = fetch_binance_ohlcv(limit=2)
+    # Use latest candle close as current price
+    ohlcv = fetch_mexc_ohlcv(limit=2) if hasattr(fetch_mexc_ohlcv, "__call__") else []
+    if not ohlcv:
+        ohlcv = fetch_coingecko_price_candle()
     if not ohlcv:
         conn.close()
         return
@@ -329,8 +341,8 @@ def evaluate_open_trades():
 
 # --- Reporting ---
 def format_trade_row(r):
-    _, time, direction, entry_price, result, exit_price, exit_time, rsi, wick, liq, score, tp_pct, sl_pct, source = r
-    s = f"{time} | {direction.upper()} @ {entry_price:.1f} | RSI={rsi} | Wick={wick:.2f}% | Liq=${liq:,} ({source}) | Score={score}"
+    _, time_str, direction, entry_price, result, exit_price, exit_time, rsi, wick, liq, score, tp_pct, sl_pct, source = r
+    s = f"{time_str} | {direction.upper()} @ {entry_price:.1f} | RSI={rsi} | Wick={wick:.2f}% | Liq=${liq:,} ({source}) | Score={score}"
     if result and result != "open":
         s += f" | {result} @ {exit_price:.1f} ({exit_time})"
     return s
@@ -378,7 +390,7 @@ def run_backtest(days=7):
             filtered.append(format_trade_row(r))
     if not filtered:
         return f"No trades in last {days} days."
-    return "📉 Backtest:\n" + "\n".join(filtered[:30])
+    return "📉 Backtest:\n" + "\n".join(filtered[:30})
 
 def get_results_summary():
     conn = _get_conn()
@@ -406,7 +418,7 @@ def get_results_summary():
         f"Avg score: {avg_score}"
     )
 
-# --- News fetch (added) ---
+# --- News fetch ---
 def fetch_news():
     if not NEWS_API_KEY:
         return ["No news API key set."]
@@ -423,7 +435,7 @@ def fetch_news():
         for it in items:
             title = it.get("title", "No title")
             link = it.get("url", "")
-            headlines.append(f"• {title}\\n{link}")
+            headlines.append(f"• {title}\n{link}")
         return headlines
     except Exception as e:
         return [f"News fetch error: {e}"]

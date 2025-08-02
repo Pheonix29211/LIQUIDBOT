@@ -15,8 +15,11 @@ from utils import (
     get_logs,
     fetch_combined_liquidation,
     fetch_news,
-    compute_rsi,  # used in debug
-    calculate_score,  # used in debug
+    compute_rsi,
+    calculate_score,
+    fetch_mexc_ohlcv,
+    fetch_mexc_ticker,
+    fetch_mexc_funding_rate,
 )
 
 load_dotenv()
@@ -25,17 +28,15 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID")
 
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("TELEGRAM_BOT_TOKEN missing.")
-if not WEBHOOK_URL:
-    raise RuntimeError("WEBHOOK_URL missing.")
+if not TELEGRAM_TOKEN or not WEBHOOK_URL:
+    raise RuntimeError("Required env vars missing.")
 
 bot = Bot(token=TELEGRAM_TOKEN)
 app = Flask(__name__)
 dispatcher = Dispatcher(bot, None, use_context=True)
 
 os.environ["TZ"] = "Asia/Kolkata"
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- Handlers ---
 def start(update: Update, context):
@@ -53,7 +54,8 @@ def menu(update: Update, context):
         "/liqcheck\n"
         "/news\n"
         "/scan\n"
-        "/envcheck"
+        "/envcheck\n"
+        "/debug_sources"
     )
 
 def backtest_cmd(update: Update, context):
@@ -113,18 +115,14 @@ def send_signal_message(signal):
         logging.warning("OWNER_CHAT_ID not set; cannot send signal.")
 
 def scan_cmd(update: Update, context):
-    # Force evaluate open trades
     try:
         evaluate_open_trades()
     except Exception as e:
         update.message.reply_text(f"Error evaluating open trades: {e}")
 
-    # Debug info
-    from utils import fetch_binance_ohlcv, fetch_coinglass_liquidation
-
-    ohlcv = fetch_binance_ohlcv()
+    ohlcv = fetch_mexc_ohlcv()
     if not ohlcv:
-        update.message.reply_text("🔍 Scan: failed to fetch OHLCV data.")
+        update.message.reply_text("🔍 Scan: failed to fetch MEXC OHLCV.")
         return
 
     closes = [c["close"] for c in ohlcv]
@@ -159,9 +157,23 @@ def scan_cmd(update: Update, context):
         except Exception as e:
             update.message.reply_text(f"Failed to store signal: {e}")
         send_signal_message(signal)
-        update.message.reply_text("🔍 Scan: new signal sent.")
+        update.message.reply_text("🔍 Scan: real signal processed.")
     else:
-        update.message.reply_text("🔍 Scan: no new high-confidence signal.")
+        update.message.reply_text("🔍 Scan: no high-confidence real signal.")
+
+def debug_sources(update: Update, context):
+    ohlcv = fetch_mexc_ohlcv()
+    close = ohlcv[-1]["close"] if ohlcv else "none"
+    liq, source = fetch_combined_liquidation()
+    mexc_ticker = fetch_mexc_ticker()
+    hold_vol = mexc_ticker.get("holdVol", "n/a")
+    funding = mexc_ticker.get("fundingRate", "n/a")
+    update.message.reply_text(
+        f"MEXC last close: {close}\n"
+        f"Liquidation proxy: ${liq:,.0f} (source: {source})\n"
+        f"MEXC holdVol: {hold_vol}\n"
+        f"MEXC fundingRate: {funding}"
+    )
 
 # Register handlers
 dispatcher.add_handler(CommandHandler("start", start))
@@ -175,8 +187,9 @@ dispatcher.add_handler(CommandHandler("liqcheck", liqcheck))
 dispatcher.add_handler(CommandHandler("news", news_cmd))
 dispatcher.add_handler(CommandHandler("scan", scan_cmd))
 dispatcher.add_handler(CommandHandler("envcheck", envcheck))
+dispatcher.add_handler(CommandHandler("debug_sources", debug_sources))
 
-# Webhook route
+# Webhook
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
@@ -185,7 +198,7 @@ def webhook():
 
 @app.route("/")
 def index():
-    return "Bot is live."
+    return "Bot is running."
 
 # Scheduled loop
 def scheduled_tasks():
@@ -199,6 +212,7 @@ def scheduled_tasks():
         logging.error("Scheduled task failed: %s", e)
 
 if __name__ == "__main__":
+    logging.info("Starting bot with webhook URL: %s", f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
     bot.set_webhook(url=f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
     from threading import Thread
     import time
@@ -206,7 +220,7 @@ if __name__ == "__main__":
     def loop():
         while True:
             scheduled_tasks()
-            time.sleep(300)  # every 5 minutes
+            time.sleep(300)
 
     Thread(target=loop, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
