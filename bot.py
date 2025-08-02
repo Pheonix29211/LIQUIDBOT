@@ -1,119 +1,160 @@
-
 import os
-import json
-import sqlite3
 import logging
 from flask import Flask, request
 from telegram import Bot, Update
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
+from telegram.ext import Dispatcher, CommandHandler
+from dotenv import load_dotenv
 from utils import (
-    detect_trade_signal,
-    get_trade_results,
+    generate_trade_signal,
+    store_trade,
+    evaluate_open_trades,
+    get_last_trades,
+    get_results_summary,
     run_backtest,
     get_status,
     get_logs,
-    get_last_trades
+    fetch_coinglass_liquidation,
+    fetch_news,
 )
 
-from datetime import datetime
-from dotenv import load_dotenv
-
-# Load environment variables
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID")  # chat id where alerts go
 
-# Set timezone to IST
-os.environ["TZ"] = "Asia/Kolkata"
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN missing")
+if not WEBHOOK_URL:
+    raise RuntimeError("WEBHOOK_URL missing")
 
-# Logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-
-# Telegram bot
-bot = Bot(token=TOKEN)
+# Setup
+bot = Bot(token=TELEGRAM_TOKEN)
 app = Flask(__name__)
-
 dispatcher = Dispatcher(bot, None, use_context=True)
 
-# Telegram commands
-def start(update, context):
-    update.message.reply_text("Welcome to LiquidBot!\nType /menu to view all available commands.")
+# Logging
+logging.basicConfig(level=logging.INFO)
 
-def menu(update, context):
-    update.message.reply_text("Available Commands:\n"
-                              "/menu - Show this menu\n"
-                              "/start - Start the bot\n"
-                              "/backtest - Run a 7-day backtest with trade details\n"
-                              "/train - Retrain the strategy from past data\n"
-                              "/status - Show current strategy parameters\n"
-                              "/logs - Show recent logs\n"
-                              "/results - Show strategy performance\n"
-                              "/last30 - Show last 30 live trades (wins/losses)\n"
-                              "/news - Show recent Bitcoin news headlines")
+# Commands
+def start(update: Update, context):
+    update.message.reply_text("🚀 LiquidBot is running. Use /menu to see commands.")
 
-def backtest(update, context):
-    result = run_backtest()
-    update.message.reply_text(result)
+def menu(update: Update, context):
+    update.message.reply_text(
+        "/menu\n"
+        "/start\n"
+        "/backtest\n"
+        "/last30\n"
+        "/results\n"
+        "/status\n"
+        "/logs\n"
+        "/liqcheck\n"
+        "/news\n"
+        "/scan  (force signal + open eval)"
+    )
 
-def train(update, context):
-    train_strategy()
-    update.message.reply_text("Strategy retrained from past data.")
+def backtest_cmd(update: Update, context):
+    update.message.reply_text(run_backtest())
 
-def status(update, context):
-    status_msg = get_status()
-    update.message.reply_text(status_msg)
+def last30_cmd(update: Update, context):
+    update.message.reply_text(get_last_trades())
 
-def logs(update, context):
-    log_data = get_logs()
-    update.message.reply_text(log_data)
+def results_cmd(update: Update, context):
+    update.message.reply_text(get_results_summary())
 
-def results(update, context):
-    try:
-        with open("trades.txt", "r") as file:
-            lines = file.readlines()[-30:]
-        if not lines:
-            update.message.reply_text("No trade data found.")
-            return
-        formatted = ""
-        for line in lines:
-            if "LONG" in line or "SHORT" in line:
-                formatted += line
-        update.message.reply_text("Last 30 Trades:\n" + formatted)
-    except Exception as e:
-        update.message.reply_text("Failed to load results.")
+def status_cmd(update: Update, context):
+    update.message.reply_text(get_status())
 
-def last30(update, context):
-    last = get_last_trades()
-    update.message.reply_text(last)
+def logs_cmd(update: Update, context):
+    update.message.reply_text(get_logs())
 
-def news(update, context):
-    headlines = get_news()
-    update.message.reply_text("Latest Bitcoin News:\n" + headlines)
+def liqcheck(update: Update, context):
+    liq = fetch_coinglass_liquidation()
+    update.message.reply_text(f"Liquidation total: ${liq:,}")
 
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(CommandHandler("menu", menu))
-dispatcher.add_handler(CommandHandler("backtest", backtest))
-dispatcher.add_handler(CommandHandler("train", train))
-dispatcher.add_handler(CommandHandler("status", status))
-dispatcher.add_handler(CommandHandler("logs", logs))
-dispatcher.add_handler(CommandHandler("results", results))
-dispatcher.add_handler(CommandHandler("last30", last30))
-dispatcher.add_handler(CommandHandler("news", news))
+def news_cmd(update: Update, context):
+    headlines = fetch_news()
+    update.message.reply_text("\n\n".join(headlines))
 
-# Signal checker
-def check_signals():
+def scan_cmd(update: Update, context):
+    # Force evaluate open trades and generate new signal
+    evaluate_open_trades()
     signal = generate_trade_signal()
     if signal:
         store_trade(signal)
-        bot.send_message(chat_id=os.getenv("OWNER_CHAT_ID"), text=signal)
+        send_signal_message(signal)
+        update.message.reply_text("🔍 Scan: new signal sent.")
+    else:
+        update.message.reply_text("🔍 Scan: no new high-confidence signal.")
 
-@app.route(f'/{TOKEN}', methods=["POST"])
+def send_signal_message(signal):
+    direction = signal["direction"].upper()
+    score = signal["score"]
+    entry = signal["entry_price"]
+    rsi = signal["rsi"]
+    wick = signal["wick_percent"]
+    liq = signal["liquidation_usd"]
+    tp = signal["tp_sl"]["tp_pct"] * 100
+    sl = signal["tp_sl"]["sl_pct"] * 100
+    strength = "Strong" if score >= 1.5 else ("Moderate" if score >= 1.0 else "Weak")
+    msg = (
+        f"🚨 {direction} Signal\n"
+        f"Entry: {entry:.1f}\n"
+        f"RSI: {rsi} | Wick%: {wick:.2f}% | Liq: ${liq:,}\n"
+        f"Score: {score} → {strength} setup\n"
+        f"TP: +{tp:.2f}% | SL: -{sl:.2f}%"
+    )
+    if OWNER_CHAT_ID:
+        bot.send_message(chat_id=OWNER_CHAT_ID, text=msg)
+    else:
+        logging.warning("OWNER_CHAT_ID not set; signal not sent to user.")
+
+# Register
+dispatcher.add_handler(CommandHandler("start", start))
+dispatcher.add_handler(CommandHandler("menu", menu))
+dispatcher.add_handler(CommandHandler("backtest", backtest_cmd))
+dispatcher.add_handler(CommandHandler("last30", last30_cmd))
+dispatcher.add_handler(CommandHandler("results", results_cmd))
+dispatcher.add_handler(CommandHandler("status", status_cmd))
+dispatcher.add_handler(CommandHandler("logs", logs_cmd))
+dispatcher.add_handler(CommandHandler("liqcheck", liqcheck))
+dispatcher.add_handler(CommandHandler("news", news_cmd))
+dispatcher.add_handler(CommandHandler("scan", scan_cmd))
+
+# Webhook
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
     dispatcher.process_update(update)
     return "ok"
 
+@app.route("/")
+def index():
+    return "Bot is live."
+
+# Periodic jobs (every 5 mins): evaluate open and auto-scan
+def scheduled_tasks():
+    try:
+        evaluate_open_trades()
+        signal = generate_trade_signal()
+        if signal:
+            store_trade(signal)
+            send_signal_message(signal)
+    except Exception as e:
+        logging.error("Scheduled task error: %s", e)
+
 if __name__ == "__main__":
-    logging.info("Starting bot with webhook URL: %s", f"{WEBHOOK_URL}/{TOKEN}")
-    bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-    app.run(host="0.0.0.0", port=10000)
+    # set webhook
+    bot.set_webhook(url=f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
+    # schedule with simple loop fallback (to avoid extra scheduler complexity)
+    from threading import Thread
+    import time
+
+    def loop():
+        while True:
+            scheduled_tasks()
+            time.sleep(300)  # 5 minutes
+
+    Thread(target=loop, daemon=True).start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
