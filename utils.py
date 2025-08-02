@@ -405,3 +405,25 @@ def get_results_summary():
         f"Win rate: {win_rate}%\n"
         f"Avg score: {avg_score}"
     )
+
+# --- News fetch (added) ---
+def fetch_news():
+    if not NEWS_API_KEY:
+        return ["No news API key set."]
+    try:
+        url = f"https://cryptopanic.com/api/v1/posts/?auth_token={NEWS_API_KEY}&currencies=BTC"
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return [f"CryptoPanic HTTP {r.status_code}: {r.text[:200]}"]
+        data = r.json()
+        items = data.get("results", [])[:5]
+        if not items:
+            return ["No recent news found."]
+        headlines = []
+        for it in items:
+            title = it.get("title", "No title")
+            link = it.get("url", "")
+            headlines.append(f"• {title}\\n{link}")
+        return headlines
+    except Exception as e:
+        return [f"News fetch error: {e}"]
